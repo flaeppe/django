@@ -1,3 +1,4 @@
+import itertools
 import logging
 import os
 import unittest
@@ -1790,6 +1791,69 @@ class CaptureOnCommitCallbacksTests(TestCase):
 
         self.assertEqual(len(callbacks), 2)
         self.assertIs(self.callback_called, True)
+
+    def test_execute_tree(self):
+        """
+        A visualisation of the callback tree tested. Each node is expected to be visited
+        only once. The child count of a node symbolises the amount of on commit
+        callbacks.
+
+        root
+        └── branch_1
+            ├── branch_2
+            │   ├── leaf_1
+            │   └── leaf_2
+            └── leaf_3
+        """
+        (
+            branch_1_call_counter,
+            branch_2_call_counter,
+            leaf_1_call_counter,
+            leaf_2_call_counter,
+            leaf_3_call_counter,
+        ) = [itertools.count(start=1) for _ in range(5)]
+
+        def leaf_3():
+            next(leaf_3_call_counter)
+
+        def leaf_2():
+            next(leaf_2_call_counter)
+
+        def leaf_1():
+            next(leaf_1_call_counter)
+
+        def branch_2():
+            next(branch_2_call_counter)
+            transaction.on_commit(leaf_1)
+            transaction.on_commit(leaf_2)
+
+        def branch_1():
+            next(branch_1_call_counter)
+            transaction.on_commit(branch_2)
+            transaction.on_commit(leaf_3)
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            with transaction.atomic():
+                transaction.on_commit(branch_1)
+
+        # Every counter shall only have been called once, starting at 1; next value then
+        # has to be 2
+        self.assertEqual(next(branch_1_call_counter), 2)
+        self.assertEqual(next(branch_2_call_counter), 2)
+        self.assertEqual(next(leaf_1_call_counter), 2)
+        self.assertEqual(next(leaf_2_call_counter), 2)
+        self.assertEqual(next(leaf_3_call_counter), 2)
+        # Make sure all calls can be seen and the execution order is correct
+        self.assertEqual(
+            [(id(callback), callback.__name__) for callback in callbacks],
+            [
+                (id(branch_1), "branch_1"),
+                (id(branch_2), "branch_2"),
+                (id(leaf_3), "leaf_3"),
+                (id(leaf_1), "leaf_1"),
+                (id(leaf_2), "leaf_2"),
+            ],
+        )
 
 
 class DisallowedDatabaseQueriesTests(SimpleTestCase):
